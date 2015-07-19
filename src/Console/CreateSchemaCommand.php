@@ -1,10 +1,9 @@
 <?php namespace Atrauzzi\LaravelDoctrine\Console;
 
-use Illuminate\Console\Command;
-use Illuminate\Support\Facades\App;
+use Doctrine\ORM\Tools\SchemaTool;
 
 
-class CreateSchemaCommand extends Command {
+class CreateSchemaCommand extends AbstractCommand {
 
 	/**
 	 * The console command name.
@@ -20,28 +19,19 @@ class CreateSchemaCommand extends Command {
 	 */
 	protected $description = 'Creates your database schema according to your models.';
 
-	/**
-	 * Create a new command instance.
-	 *
-	 * @return void
-	 */
-	public function __construct() {
-		parent::__construct();
-	}
-
-	/**
-	 * Execute the console command.
-	 *
-	 * @return void
-	 */
+    /**
+     * Execute the console command.
+     */
 	public function fire() {
+
+        $em = $this->getManager();
+
 		$this->comment('ATTENTION: This operation should not be executed in a production environment.');
 		$this->info('Obtaining metadata...');
-        $metadata = $this->laravel->make('\Doctrine\ORM\Mapping\ClassMetadataFactory')->getAllMetadata();
+        $metadata = $em->getMetadataFactory()->getAllMetadata();
 		$this->info('Creating database schema...');
-        $schemaTool = $this->laravel->make('\Doctrine\ORM\Tools\SchemaTool');
+        $schemaTool = new SchemaTool($em);
         $schemaTool->createSchema($metadata);
 		$this->info('Database schema created successfully!');
     }
-
 }
