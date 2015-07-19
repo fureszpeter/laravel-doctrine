@@ -7,37 +7,41 @@ use Doctrine\Common\Persistence\AbstractManagerRegistry;
  * Provides easier integration with third party libraries such as
  * DoctrineBridge (https://github.com/symfony/DoctrineBridge).
  */
-class DoctrineRegistry extends AbstractManagerRegistry {
+class DoctrineRegistry extends AbstractManagerRegistry
+{
 
-	/**
-	 * Returns the service name, for our purposes this will
-	 * almost always return the Doctrine facade, our access to the
-	 * entity manager.
-	 */
-	public function getService($name) {
-		return app($name);
-	}
+    /**
+     * {@inheritdoc}
+     */
+    public function resetService($name)
+    {
+        app()->forgetInstance("doctrine.em.$name");
+    }
 
-	/**
-	 * @param string $name
-	 */
-	public function resetService($name) {
-		app()->forgetInstance($name);
-	}
+    /**
+     * {@inheritdoc}
+     */
+    public function getAliasNamespace($namespaceAlias)
+    {
+    }
 
-	/**
-	 * @param string $namespaceAlias
-	 * @return string|void
-	 */
-	public function getAliasNamespace($namespaceAlias) {
-	}
+    /**
+     * {@inheritdoc}
+     */
+    public function getManagerForClass($class)
+    {
+        return $this->getService('doctrine');
+    }
 
-	/**
-	 * @param string $class
-	 * @return mixed|object
-	 */
-	public function getManagerForClass($class) {
-		return $this->getService('doctrine');
-	}
-
+    /**
+     * Returns the service name, for our purposes this will
+     * almost always return the Doctrine facade, our access to the
+     * entity manager.
+     *
+     * {@inheritdoc}
+     */
+    public function getService($name)
+    {
+        return app("doctrine.em.$name");
+    }
 }

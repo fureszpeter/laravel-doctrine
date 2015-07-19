@@ -2,7 +2,10 @@
 namespace Atrauzzi\LaravelDoctrine;
 
 use Atrauzzi\LaravelDoctrine\Listener\Metadata\TablePrefix;
+use Auth;
+use Doctrine\Common\Cache\Cache;
 use Doctrine\Common\EventManager;
+use Doctrine\Common\Persistence\Mapping\Driver\MappingDriverChain;
 use Doctrine\Common\Persistence\Mapping\Driver\StaticPHPDriver;
 use Doctrine\DBAL\Types\Type;
 use Doctrine\ORM\Configuration as DoctrineConfig;
@@ -36,7 +39,7 @@ class ServiceProvider extends Base
 
         $this->registerCustomTypes();
 
-        $this->publishes([__DIR__ . '/..' . '/config/doctrine.php' => config_path('doctrine.php')], 'config');
+        $this->publishes([__DIR__ . '/../config/doctrine.php' => config_path('doctrine.php')], 'config');
 
         $this->commands([
             'Atrauzzi\LaravelDoctrine\Console\CreateSchemaCommand',
@@ -54,7 +57,7 @@ class ServiceProvider extends Base
      */
     public function register()
     {
-        $this->app->singleton('\Doctrine\ORM\EntityManager', function (Application $app) {
+        $this->app->singleton('\Doctrine\ORM\EntityManager', function () {
 
             return EntityManager::create(
                 $this->getDoctrineConnection(),
@@ -71,23 +74,27 @@ class ServiceProvider extends Base
             return $app->make('\Doctrine\ORM\EntityManager')->getMetadataFactory();
         });
 
-        $this->app->singleton('\Doctrine\Common\Persistence\ManagerRegistry', function (Application $app) {
-            $connections = ['doctrine.connection'];
-            $managers = ['doctrine' => 'doctrine'];
-            $proxy = '\Doctrine\Common\Persistence\Proxy';
-
-            return new DoctrineRegistry(
-                'doctrine',
-                $connections,
-                $managers,
-                $connections[0],
-                $managers['doctrine'],
-                $proxy
-            );
-        });
-
         $this->app->singleton('doctrine.connection', function (Application $app) {
             return $app->make('\Doctrine\ORM\EntityManager')->getConnection();
+        });
+
+        $this->registerEntityManagers();
+
+        $this->app->singleton('\Doctrine\Common\Persistence\ManagerRegistry', function () {
+            return new DoctrineRegistry(
+                'doctrine',
+                array_combine(
+                    array_keys(config('doctrine.connections')),
+                    array_keys(config('doctrine.connections'))
+                ),
+                array_combine(
+                    array_keys(config('doctrine.entity_managers')),
+                    array_keys(config('doctrine.entity_managers'))
+                ),
+                config('doctrine.default_connection'),
+                config('doctrine.default_entity_manager'),
+                'Doctrine\Common\Persistence\Proxy'
+            );
         });
     }
 
@@ -104,10 +111,6 @@ class ServiceProvider extends Base
             '\Doctrine\ORM\Tools\SchemaTool',
         ];
     }
-
-    //
-    //
-    //
 
     /**
      * Takes care of building any drivers we wish to support.
@@ -162,15 +165,15 @@ class ServiceProvider extends Base
      * @throws \Exception
      * @throws \Symfony\Component\Debug\Exception\ClassNotFoundException
      *
-     * @return \Doctrine\Common\Cache\CacheProvider
+     * @return \Doctrine\Common\Cache\CacheProvider|null
      */
     protected function createCache()
     {
-        if (is_null(config('doctrine.cache.provider'))) {
+        $cacheProvider = config('doctrine.cache.provider');
+
+        if (is_null($cacheProvider)) {
             return null;
         }
-
-        $cacheProvider = config('doctrine.cache.provider');
 
         $supportedProviders = config('doctrine.cache.providers', []);
 
@@ -198,29 +201,32 @@ class ServiceProvider extends Base
     }
 
     /**
-     * @param $cache
+     * @param \Doctrine\Common\Cache\Cache|null $cache
      *
      * @throws \Doctrine\ORM\ORMException
      *
-     * @return DoctrineConfig
+     * @return \Doctrine\ORM\Configuration
      */
-    protected function createDoctrineConfig($cache)
+    protected function createDoctrineConfig(Cache $cache = null)
     {
         $debug = config('doctrine.debug', config('app.debug', false));
         $metadataConfig = config('doctrine.metadata', ['driver' => 'config']);
         $proxyDir = config('doctrine.proxy_classes.directory', storage_path('doctrine/proxies'));
+
         // Note: Don't worry, caches are configured below.
         $doctrineConfig = Setup::createConfiguration($debug, $proxyDir, null);
         if (!empty($metadataConfig) && isset($metadataConfig[0]) && is_array($metadataConfig[0])) {
-            $metadataDriver = new \Doctrine\Common\Persistence\Mapping\Driver\MappingDriverChain();
+            $metadataDriver = new MappingDriverChain();
             foreach ($metadataConfig as $subDriverConfig) {
                 if (!is_array($subDriverConfig)) {
                     continue;
                 }
+
                 $metadataDriver->addDriver(
                     $this->createMetadataDriver($doctrineConfig, $subDriverConfig),
                     array_get($subDriverConfig, 'namespace', 'App')
                 );
+
                 if (isset($subDriverConfig['namespace']) && isset($subDriverConfig['alias'])) {
                     $doctrineConfig->addEntityNamespace(
                         $subDriverConfig['alias'],
@@ -231,6 +237,7 @@ class ServiceProvider extends Base
         } else {
             $metadataDriver = $this->createMetadataDriver($doctrineConfig, $metadataConfig);
         }
+
         $doctrineConfig->setMetadataDriverImpl($metadataDriver);
         //add in trig functions to doctrine for mysql
         $doctrineConfig->setCustomNumericFunctions([
@@ -252,6 +259,7 @@ class ServiceProvider extends Base
             $doctrineConfig->setQueryCacheImpl($cache);
             $doctrineConfig->setResultCacheImpl($cache);
         }
+
         $doctrineConfig->setAutoGenerateProxyClasses(
             config('doctrine.proxy_classes.auto_generate', !$debug)
         );
@@ -286,20 +294,29 @@ class ServiceProvider extends Base
         $authenticator = config('doctrine.auth.authenticator', null);
 
         if (!is_null($authenticator) && class_exists($authenticator)) {
-            \Auth::extend('doctrine.auth', function (Application $app) use ($authenticator) {
+            Auth::extend('doctrine.auth', function (Application $app) use ($authenticator) {
                 return $app->make($authenticator, [config('doctrine.auth.model')]);
             });
         }
     }
 
     /**
+     * @param string $name The name of the connection. Default value is the value of `doctrine.connections.default
+     *
+     * @throws \Exception If not connection found
+     *
      * @return mixed
      */
-    protected function getDoctrineConnection()
+    protected function getDoctrineConnection($name = null)
     {
-        $database = config('doctrine.connections.default', config('database.default'));
+        if (!$name) {
+            $name = config('doctrine.default_connection', config('database.default'));
+        }
+
+        $database = $name;
+
         if (empty($database)) {
-            throw new \Exception("Database type not set");
+            throw new \Exception("Connection name not set: " . $name);
         }
 
         $laravel_database_configuration = config('database.connections.' . $database, []);
@@ -313,11 +330,11 @@ class ServiceProvider extends Base
     }
 
     /**
-     * @param $config
+     * @param array $config
      *
-     * @return mixed
+     * @return array
      */
-    private function mapToDoctrineConfigs($config)
+    private function mapToDoctrineConfigs(array $config)
     {
         $mappings = [
             'database' => 'dbname',
@@ -341,5 +358,25 @@ class ServiceProvider extends Base
         }
 
         return $config;
+    }
+
+    /**
+     * @return void
+     */
+    private function registerEntityManagers()
+    {
+        $managers = config('doctrine.entity_managers', []);
+
+        foreach ($managers as $manager => $settings) {
+            $this->app->singleton("doctrine.em.{$manager}", function () use ($settings) {
+
+                return EntityManager::create(
+                    $this->getDoctrineConnection($settings['connection']),
+                    $this->createDoctrineConfig($this->createCache()),
+                    $this->createEventManager()
+                );
+
+            });
+        }
     }
 }
